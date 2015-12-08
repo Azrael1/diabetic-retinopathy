@@ -18,18 +18,7 @@ the vector whose i'th element is P(Y=i|x).
 
   y_{pred} = argmax_i P(Y=i|x,W,b)
 
-
-This tutorial presents a stochastic gradient descent optimization method
-suitable for large datasets.
-
-
-References:
-
-    - textbooks: "Pattern Recognition and Machine Learning" -
-                 Christopher M. Bishop, section 4.3.2
-
 """
-__docformat__ = 'restructedtext en'
 
 import cPickle
 import gzip
