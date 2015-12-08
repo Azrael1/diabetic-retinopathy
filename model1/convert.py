@@ -101,12 +101,13 @@ def save(img, fname):
 @click.command()
 @click.option('--directory', default='/media/azrael/Data/data/train_res_small', show_default=True,
               help="Directory with original images.")
-@click.option('--convert_directory', default='/media/azrael/Data/data/train_res_smaller', show_default=True,
+@click.option('--convert_directory', default='/media/azrael/Data/data/train_res_smallest', show_default=True,
               help="Where to save converted images.")
-@click.option('--crop_size', default=64, show_default=True,
+@click.option('--crop_size', default=32, show_default=True,
               help="Size of converted images.")
 @click.option('--extension', default='tiff', show_default=True,
               help="Filetype of converted images.")
+
 def main(directory, convert_directory, crop_size, extension):
     """
     Run this function to preprocess the data.
