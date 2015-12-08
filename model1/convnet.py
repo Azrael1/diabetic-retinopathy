@@ -1,5 +1,3 @@
-
-# work on green channel only.
 import os
 import sys
 import timeit
@@ -9,6 +7,11 @@ import numpy as np
 import csv
 
 import cv2
+import time
+
+import matplotlib
+import matplotlib.pyplot as pyplot
+from pylab import *
 
 import theano
 import theano.tensor as T
@@ -97,20 +100,22 @@ class ConvPoolLayer(object):
         self.input = input
 
 
-def load_data(image_dataset, label_dataset):
+def load_data(image_dataset, label_dataset, image_size):
     """
-    Loads the dataset.
+    Loads the dataset. The images don't load in sequence so this function is used to correct that part.
+    Does the preprocessing to align the image data with labels data and then returns them
     type dataset: str
     param dataset: symbolic link to data
     """
     # For now, load the dataset from the train folder.
     numbers = re.compile(r'(\d+)')
     label_reader = csv.reader(open(label_dataset, mode='rb'))
-    # Discard the 1st field which is ['image', 'level']
+    # Discard the 1st field in -- ['image', 'level']
     labels = [label for label in label_reader][1:]
 
     def numericalsort(value):
         x = numbers.split(value)
+        # example of a split -- ['', '10003', '_left.tiff']
         x[1::3] = map(int, x[1::3])
         return x
 
@@ -125,18 +130,67 @@ def load_data(image_dataset, label_dataset):
         assert image.split('.')[0] == labels[idx][0]
         idx += 1
     data_x = np.asarray(data_x, theano.config.floatX)
-#    data_x.shape = [num_images, num_channels, num_rows, num_columns] -- [35126, 3, 64, 64]
-    assert data_x.shape == (35126, 64, 64, 3)
+#    data_x.shape = [num_images, num_channels, num_rows, num_columns] -- [35126, 3, image_size, image_size]
+    assert data_x.shape == (35126, image_size, image_size, 3)
     y = [label[1] for label in labels]
     data_y = np.asarray(y, 'int32')
+
     assert data_y.shape[0] == 35126
     return data_x, data_y, len(y)
 
 
-def evaluate_lenet5(learning_rate=0.1, n_epochs=200,
-                    dataset='/media/azrael/Data/data/train_res_smaller',
+def load_balanced_dataset(image_dataset, label_dataset, image_size):
+    """
+    Loads balanced version of dataset. Meaning each label will be having equal amount of images in the data.
+    type dataset: str
+    param dataset: symbolic link to data
+    """
+    # For now, load the dataset from the train folder.
+    # The constraint for a fully balanced dataset(Each class having equal amounts of data) is imposed by level 4
+    # (0-4 levels). It possesses only 700 images(2 percent of the data).
+    # So I am going to take the first 700 images from each label and only train on them.
+
+    numbers = re.compile(r'(\d+)')
+    label_reader = csv.reader(open(label_dataset, mode='rb'))
+    # Discard the 1st field in -- ['image', 'level']
+    labels = [label for label in label_reader][1:]
+
+    def numericalsort(value):
+        x = numbers.split(value)
+        # example of a split -- ['', '10003', '_left.tiff']
+        x[1::3] = map(int, x[1::3])
+        return x
+
+    data_x, y = [], []
+    images = os.listdir(image_dataset)
+    sorted_images = sorted(images, key=numericalsort)
+    idx = 0
+    # idx_ is the variable that keeps count of the number of images that have been seen per category.
+    idx_ = [0]*5
+    for image in sorted_images:
+        assert image.split('.')[0] == labels[idx][0]
+        if idx_[int(labels[idx][1])] < 700:
+            idx_[int(labels[idx][1])] += 1
+            y.append(int(labels[idx][1]))
+            image_link = image_dataset + '/' + image
+            opened_image = cv2.imread(image_link)
+            data_x.append(opened_image)
+
+        idx += 1
+    data_x = np.asarray(data_x, theano.config.floatX)
+
+    # 3500 because there are 5 labels and each labels has 700 images.
+    assert data_x.shape == (3500, image_size, image_size, 3)
+    data_y = np.asarray(y, 'int32')
+
+    assert data_y.shape[0] == 3500
+    return data_x, data_y, len(y)
+
+
+def evaluate_lenet5_grads(learning_rate=0.013, n_epochs=700,
+                    dataset='/media/azrael/Data/data/train_res_smallest',
                     label_dataset='/home/azrael/Documents/ubuntu/trainLabels.csv',
-                    nkerns=[20, 50, 50], batch_size=500):
+                    nkerns=[20, 50, 50], batch_size=20):
     """
     :type learning_rate: float
     :param learning_rate: learning rate used (factor for the stochastic
@@ -152,12 +206,15 @@ def evaluate_lenet5(learning_rate=0.1, n_epochs=200,
     :param nkerns: number of kernels on each layer
     """
     rng = np.random.RandomState(23455)
+    image_size = 32
 
-    data_x, data_y, len_data = load_data(dataset, label_dataset)
+    data_x, data_y, len_data = load_balanced_dataset(dataset, label_dataset, image_size)
     assert data_x.ndim == 4
     assert data_y.ndim == 1
 
-    train_split, valid_split = int(len_data * 0.6), int(len_data * 0.9)
+    train_split, valid_split = int(len_data * 0.4), int(len_data * 0.8)
+    print 'Train_split', train_split
+    print 'Valid_split', valid_split
 
     train_set_x, train_set_y = data_x[:train_split, :, :, :], data_y[:train_split]
     valid_set_x, valid_set_y = data_x[train_split: valid_split, :, :, :], data_y[train_split: valid_split]
@@ -170,6 +227,9 @@ def evaluate_lenet5(learning_rate=0.1, n_epochs=200,
     n_train_batches /= batch_size
     n_valid_batches /= batch_size
     n_test_batches /= batch_size
+    print 'N_test_batches', n_test_batches
+    print 'N_train_batches', n_train_batches
+    print 'N_valid_batches', n_valid_batches
 
     # allocate symbolic variables for the data
     index = T.lscalar()  # index to a [mini]batch
@@ -191,7 +251,6 @@ def evaluate_lenet5(learning_rate=0.1, n_epochs=200,
     # BUILD ACTUAL MODEL #
     ######################
     print '... building the model'
-    image_size = 64
 
     layer0_input = x
 
@@ -208,64 +267,48 @@ def evaluate_lenet5(learning_rate=0.1, n_epochs=200,
     # d2 = K
 
     # Construct the first convolutional pooling layer:
-    # filtering reduces the image size to (64-5+1 , 64-5+1) = (60, 60)
-    # maxpooling reduces this further to (60/2, 60/2) = (30, 30)
-    # 4D output tensor is thus of shape (batch_size, nkerns[0], 30, 30)
+    # filtering reduces the image size to (32-3+1 , 32-3+1) = (30, 30)
+    # maxpooling reduces this further to (15, 15)
+    # 4D output tensor is thus of shape (batch_size, nkerns[0],)
     poolfactor_layer0 = 2
 
     layer0 = ConvPoolLayer(
         rng,
         input=layer0_input,
         image_shape=(batch_size, 3, image_size, image_size),
-        filter_shape=(nkerns[0], 3, 5, 5),
+        filter_shape=(nkerns[0], 3, 3, 3),
         poolsize=(poolfactor_layer0, poolfactor_layer0)
     )
-
-    # Construct the second convolutional pooling layer
-    # filtering reduces the image size to (30-5+1, 30-5+1) = (26, 26)
-    # maxpooling reduces this further to (26/2, 26/2) = (13, 13)
-    # 4D output tensor is thus of shape (batch_size, nkerns[1], 13, 13)
-    poolfactor_layer1 = 2
-
-    layer1 = ConvPoolLayer(
-        rng,
-        input=layer0.output,
-        image_shape=(batch_size, nkerns[0], 30, 30),
-        filter_shape=(nkerns[1], nkerns[0], 5, 5),
-        poolsize=(poolfactor_layer1, poolfactor_layer1)
-    )
-
-    # Construct the third convolutional pooling layer
-    # filtering reduces the image size to (61-2+1, 61-2+1) = (60, 60)
-    # maxpooling reduces this further to (60/4, 60/2) = (15,15)
-    # 4D output tensor is thus of shape (batch_size, nkerns[2], 15, 15)
-    # layer2 = ConvPoolLayer(
-    #    rng,
-    #    input=layer0.output,
-    #    image_shape=(batch_size, nkerns[1], 61, 61),
-    #    filter_shape=(nkerns[2], nkerns[1], 15, 15),
-    #    poolsize=(4, 4)
-    #)
 
     # the HiddenLayer being fully-connected, it operates on 2D matrices of
     # shape (batch_size, num_pixels) (i.e matrix of rasterized images).
     # This will generate a matrix of shape (batch_size, nkerns[1] * 13 * 13),
-    # or (500, 50 * 13 * 13) = (500, ??) with the default values.
+    # or (500, 50 * 13 * 13) with the default values.
     # theano's flatten has different behaviour compared to np's.
-    layer3_input = layer1.output.flatten(2)
+    layer0__input = layer0.output.flatten(2)
+
+    layer0_ = HiddenLayer(
+        rng,
+        input=layer0__input,
+        n_in=nkerns[0] * 15 * 15,
+        n_out=500,
+        activation=T.tanh
+    )
 
     # construct a fully-connected sigmoidal layer
+    # layer0 directly connected with layer3. Nothing to get confused about, I just insert layers between 0 and 3
+    # when I need to and hence prevent unneccessary renumbering.
     layer3 = HiddenLayer(
         rng,
-        input=layer3_input,
-        n_in=nkerns[1] * 13 * 13,
+        input=layer0_.output,
+        n_in=500,
         n_out=500,
         activation=T.tanh
     )
     # shape of layer3.output = (batch_size,500)
 
     # classify the values of the fully-connected sigmoidal layer
-    layer4 = LogisticRegression(input=layer3.output, n_in=500, n_out=5)
+    layer4 = LogisticRegression(rng, input=layer3.output, n_in=500, n_out=5)
     # shape of layer4.output = (batch_size, 5)
 
     # the cost we minimize during training is the NLL of the model
@@ -283,7 +326,7 @@ def evaluate_lenet5(learning_rate=0.1, n_epochs=200,
 
     validate_model = theano.function(
         [index],
-        layer4.errors(y),
+        [layer0.output, cost, layer4.errors(y)],
         givens={
             x: valid_set_x[index * batch_size: (index + 1) * batch_size],
             y: valid_set_y[index * batch_size: (index + 1) * batch_size]
@@ -291,7 +334,7 @@ def evaluate_lenet5(learning_rate=0.1, n_epochs=200,
     )
 
     # create a list of all model parameters to be fit by gradient descent
-    params = layer3.params + layer1.params + layer0.params
+    params = layer4.params + layer3.params  + layer0_.params + layer0.params
 
     # create a list of gradients for all model parameters
     grads = T.grad(cost, params)
@@ -308,7 +351,7 @@ def evaluate_lenet5(learning_rate=0.1, n_epochs=200,
 
     train_model = theano.function(
         [index],
-        cost,
+        [y, layer4.errors(y), cost],
         updates=updates,
         givens={
             x: train_set_x[index * batch_size: (index + 1) * batch_size],
@@ -322,83 +365,84 @@ def evaluate_lenet5(learning_rate=0.1, n_epochs=200,
     ###############
     print '... training'
     # early-stopping parameters
-    patience = 10000  # look as this many examples regardless
-    patience_increase = 2  # wait this much longer when a new best is
-                           # found
-    improvement_threshold = 0.995  # a relative improvement of this much is
-                                   # considered significant
-    validation_frequency = min(n_train_batches, patience / 2)
-                                  # go through this many
-                                  # minibatches before checking the network
-                                  # on the validation set; in this case we
-                                  # check every epoch
+    validation_frequency = n_epochs
+    best_validation_error = np.inf
+    best_test_score = np.inf
 
-    best_validation_loss = np.inf
-    best_iter = 0
     test_score = 0.
     start_time = timeit.default_timer()
 
     epoch = 0
-    done_looping = False
-
-    while (epoch < n_epochs) and (not done_looping):
+    iter = 0
+    t_loss, t_error, v_loss, v_error = [], [], [], []
+    while (epoch < n_epochs):
         epoch = epoch + 1
+        training_loss = []
+        training_errors = []
         for minibatch_index in xrange(n_train_batches):
 
             iter = (epoch - 1) * n_train_batches + minibatch_index
+            pred = train_model(minibatch_index)
+            training_loss.append(pred[1])
+            training_errors.append(pred[2])
+        this_training_loss = np.mean(np.array(training_loss))
+        this_training_error = np.mean(np.array(training_errors))
+        print('epoch %i,  training loss %f, training error %f %%' %
+              (epoch, this_training_loss, this_training_error*100))
+        t_loss.append(this_training_loss)
+        t_error.append(this_training_error)
 
-            if iter % 100 == 0:
-                print 'training @ iter = ', iter
-            cost_ij = train_model(minibatch_index)
+        # Each image of the minibatch is stored in a single index in validation_images.
+        validation_images = [validate_model(i)[0] for i
+                             in xrange(n_valid_batches)]
+        validation_losses = [validate_model(i)[1] for i
+                             in xrange(n_valid_batches)]
+        validation_errors = [validate_model(i)[2] for i
+                             in xrange(n_valid_batches)]
 
-            if (iter + 1) % validation_frequency == 0:
+        this_validation_loss = np.mean(validation_losses)
+        this_validation_error = np.mean(validation_errors)
+        print('epoch %i,  validation loss %f, validation error %f %%' %
+              (epoch, this_validation_loss, this_validation_error*100))
 
-                # compute zero-one loss on validation set
-                validation_losses = [validate_model(i) for i
-                                     in xrange(n_valid_batches)]
-                this_validation_loss = np.mean(validation_losses)
-                print('epoch %i, minibatch %i/%i, validation error %f %%' %
-                      (epoch, minibatch_index + 1, n_train_batches,
-                       this_validation_loss * 100.))
+        v_loss.append(this_validation_loss)
+        v_error.append(this_validation_error)
+        if this_validation_error < best_validation_error:
+            best_validation_error = this_validation_error
+            images_level0 = np.array(validation_images)
 
-                # if we got the best validation score until now
-                if this_validation_loss < best_validation_loss:
-                    # improve patience if loss improvement is good enough
-                    if this_validation_loss < best_validation_loss *  \
-                       improvement_threshold:
-                        patience = max(patience, iter * patience_increase)
+            test_errors = [
+                    test_model(i)
+                    for i in xrange(n_test_batches)
+            ]
+            test_score = np.mean(test_errors)
+            print test_score
+            if (test_score < best_test_score):
+                best_test_score = test_score
+                idox = 0
+                for image in images_level0:
+                    x = np.mean(np.mean(image, axis=0), axis=1)
+                    x_min = x.min()
+                    x_max = x.max()
+                    current_value = x-x_min
+                    newmin = 0
+                    scale=(x-x_min)/(x_max-x_min)
 
-                    # save best validation score and iteration number
-                    best_validation_loss = this_validation_loss
-                    best_iter = iter
+                    newvalue=(255*scale)+newmin
+                    cv2.imwrite('/media/azrael/Data/data/output_level0/'+str(idox)+'.png', newvalue)
+                    idox +=1
 
-                    # test it on the test set
-                    test_losses = [
-                        test_model(i)
-                        for i in xrange(n_test_batches)
-                    ]
-                    test_score = np.mean(test_losses)
-                    print(('     epoch %i, minibatch %i/%i, test error of '
-                           'best model %f %%') %
-                          (epoch, minibatch_index + 1, n_train_batches,
-                           test_score * 100.))
-
-            if patience <= iter:
-                done_looping = True
-                break
-
-    end_time = timeit.default_timer()
-    print('Optimization complete.')
-    print('Best validation score of %f %% obtained at iteration %i, '
-          'with test performance %f %%' %
-          (best_validation_loss * 100., best_iter + 1, test_score * 100.))
-    print >> sys.stderr, ('The code for file ' +
-                          os.path.split(__file__)[1] +
-                          ' ran for %.2fm' % ((end_time - start_time) / 60.))
+    print('test error of best model',
+          best_test_score * 100.)
+    plt.figure(1)
+    plt.plot(t_error)
+    plt.plot(t_loss)
+    plt.legend(['training error', 'training loss'])
+    plt.figure(2)
+    plt.plot(v_error)
+    plt.plot(v_loss)
+    plt.legend(['validation loss', 'validation error'])
+    pyplot.show()
 
 if __name__ == '__main__':
-    evaluate_lenet5()
-
-
-def experiment(state, channel):
-    evaluate_lenet5(state.learning_rate, dataset=state.dataset)
+    evaluate_lenet5_grads()
